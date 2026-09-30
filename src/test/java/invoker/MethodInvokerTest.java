@@ -34,8 +34,22 @@ class MethodInvokerTest {
     }
 
     @Test
-    void throwsInsteadOfPassingNullWhenArgumentCannotBeSynthesized() {
+    void throwsWhenParameterTypeHasNoConstructorAtAll() {
         assertThrows(IllegalArgumentException.class,
                 () -> MethodInvoker.invokeAnnotated(new BrokenService()));
+    }
+
+    @Test
+    void synthesizesArgumentsForTypesWithoutNoArgsConstructorViaTheirConstructorParameters() {
+        List<InvocationResult> results = MethodInvoker.invokeAnnotated(new ServiceWithComplexParameter());
+
+        assertEquals(2, results.size());
+        results.forEach(r -> assertTrue(r.returnValue().toString().startsWith("Located at Point(")));
+    }
+
+    @Test
+    void throwsInsteadOfInfiniteRecursionOnCircularConstructorDependency() {
+        assertThrows(IllegalArgumentException.class,
+                () -> MethodInvoker.invokeAnnotated(new ServiceWithCircularParameter()));
     }
 }

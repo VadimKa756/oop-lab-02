@@ -2,13 +2,19 @@ package invoker;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Produces argument values for reflective method calls without ever
  * resorting to null. Primitive/wrapper values vary with the call index
- * so repeated invocations are observably distinct. Any type without a
- * no-args constructor cannot be synthesized safely, so the factory
- * fails loudly instead of silently defaulting to null.
+ * so repeated invocations are observably distinct. A type without a
+ * no-args constructor is instantiated by picking its simplest available
+ * constructor and recursively synthesizing arguments for it the same
+ * way; a circular constructor dependency is detected and rejected
+ * instead of causing infinite recursion.
  */
 final class ArgumentFactory {
 
@@ -16,6 +22,10 @@ final class ArgumentFactory {
     }
 
     static Object create(Class<?> type, int callIndex) {
+        return create(type, callIndex, new HashSet<>());
+    }
+
+    private static Object create(Class<?> type, int callIndex, Set<Class<?>> inProgress) {
         if (type == int.class || type == Integer.class) {
             return callIndex + 1;
         }
@@ -46,18 +56,49 @@ final class ArgumentFactory {
         if (type.isArray()) {
             return Array.newInstance(type.getComponentType(), 0);
         }
-        return instantiateViaDefaultConstructor(type);
+        return instantiate(type, callIndex, inProgress);
     }
 
-    private static Object instantiateViaDefaultConstructor(Class<?> type) {
+    private static Object instantiate(Class<?> type, int callIndex, Set<Class<?>> inProgress) {
+        if (!inProgress.add(type)) {
+            throw new IllegalArgumentException(
+                    "Cannot synthesize an argument of type " + type.getName()
+                            + ": its constructors form a circular dependency");
+        }
+
         try {
-            Constructor<?> constructor = type.getDeclaredConstructor();
+            Constructor<?> constructor = pickConstructor(type);
+            Class<?>[] parameterTypes = constructor.getParameterTypes();
+
+            Object[] arguments = new Object[parameterTypes.length];
+            for (int i = 0; i < parameterTypes.length; i++) {
+                arguments[i] = create(parameterTypes[i], callIndex, inProgress);
+            }
+
             constructor.setAccessible(true);
-            return constructor.newInstance();
+            return constructor.newInstance(arguments);
         } catch (ReflectiveOperationException e) {
             throw new IllegalArgumentException(
-                    "Cannot synthesize a non-null argument of type " + type.getName()
-                            + ": no no-args constructor available", e);
+                    "Cannot synthesize a non-null argument of type " + type.getName(), e);
+        } finally {
+            inProgress.remove(type);
         }
+    }
+
+    /**
+     * Prefers a no-args constructor when available (zero parameters is the
+     * minimum); otherwise falls back to the constructor with the fewest
+     * parameters, keeping the recursive synthesis as shallow as possible.
+     */
+    private static Constructor<?> pickConstructor(Class<?> type) {
+        Constructor<?>[] constructors = type.getDeclaredConstructors();
+        if (constructors.length == 0) {
+            throw new IllegalArgumentException(
+                    "Cannot synthesize an argument of type " + type.getName() + ": no accessible constructor");
+        }
+
+        return Arrays.stream(constructors)
+                .min(Comparator.comparingInt(Constructor::getParameterCount))
+                .orElseThrow();
     }
 }
